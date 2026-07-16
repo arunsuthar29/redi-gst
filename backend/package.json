@@ -1,0 +1,16 @@
+{
+  "name": "redi-gst-backend",
+  "version": "1.0.0",
+  "description": "Multi-tenant invoice + GST service",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "seed": "node seeds/seed.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.22.2",
+    "pg": "^8.22.0"
+  }
+}
