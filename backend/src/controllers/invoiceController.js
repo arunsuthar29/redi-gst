@@ -27,6 +27,39 @@ function decodeCursor(cursor) {
         return null;
     }
 }
+async function voidInvoice(req, res, next) {
+    try {
+        const { id } = req.params;
+
+        const result = await withTenant(req.tenantId, async (client) => {
+            const updateRes = await client.query(
+                `UPDATE invoices
+                 SET status = 'cancelled', voided_at = now()
+                 WHERE id = $1 AND tenant_id = $2 AND voided_at IS NULL
+                 RETURNING *`,
+                [id, req.tenantId]
+            );
+            if (updateRes.rows.length === 0) return null;
+
+            await client.query(
+                `INSERT INTO audit_logs (tenant_id, entity_type, entity_id, action, details)
+                 VALUES ($1, 'invoice', $2, 'voided', '{}'::jsonb)`,
+                [req.tenantId, id]
+            );
+
+            return updateRes.rows[0];
+        });
+
+        if (!result) {
+            return res.status(404).json({ error: 'Invoice not found, or already voided' });
+        }
+        res.json(result);
+    } catch (err) {
+        next(err);
+    }
+}
+
+
 
 async function listInvoices(req, res, next) {
     try {
@@ -128,6 +161,15 @@ async function createInvoice(req, res, next) {
                     ]
                 );
             }
+            await client.query(
+    `INSERT INTO audit_logs (tenant_id, entity_type, entity_id, action, details)
+     VALUES ($1, 'invoice', $2, 'created', $3::jsonb)`,
+    [
+        req.tenantId,
+        invoiceRow.id,
+        JSON.stringify({ invoiceNumber, grandTotal: totals.grandTotal }),
+    ]
+);
 
             return { ...invoiceRow, lineItems: computed };
         });
@@ -171,4 +213,4 @@ async function getInvoice(req, res, next) {
     }
 }
 
-module.exports = { listInvoices, createInvoice, getInvoice };
+module.exports = { listInvoices, createInvoice, getInvoice,voidInvoice };
