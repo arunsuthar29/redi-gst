@@ -3,12 +3,10 @@ const pool = require('../src/config/db');
 const { calculateLineItem, aggregateInvoiceTotals } = require('../src/utils/gst');
 
 const TENANTS = [
-    { name: 'Acme Chartered Accountants', slug: 'acme-ca' },
+    { name: 'Mohit traders', slug: 'mohit-jsm' },
     { name: 'Bharat SME Traders', slug: 'bharat-sme' },
 ];
 
-// Deliberately covers all 5 GST bands (including 0%, one of the
-// evaluators' stated edge cases) across a small set of sample invoices.
 const SAMPLE_INVOICES = [
     [
         { description: 'Consulting services', quantity: 10, unitPrice: 1500, gstRate: 18 },
@@ -36,9 +34,10 @@ async function upsertTenant(client, tenant) {
 }
 
 async function seedInvoicesForTenant(client, tenantId, tenantSlug) {
-    // Required for RLS: every subsequent query in this transaction is
-    // only allowed to touch rows matching this tenant_id.
     await client.query(`SET LOCAL app.current_tenant = '${tenantId}'`);
+
+    let inserted = 0;
+    let skipped = 0;
 
     for (let i = 0; i < SAMPLE_INVOICES.length; i++) {
         const rawItems = SAMPLE_INVOICES[i];
@@ -51,6 +50,7 @@ async function seedInvoicesForTenant(client, tenantId, tenantSlug) {
                 (tenant_id, invoice_number, customer_name, status,
                  subtotal, cgst_total, sgst_total, grand_total)
              VALUES ($1, $2, $3, 'issued', $4, $5, $6, $7)
+             ON CONFLICT (tenant_id, invoice_number) DO NOTHING
              RETURNING id`,
             [
                 tenantId,
@@ -62,6 +62,18 @@ async function seedInvoicesForTenant(client, tenantId, tenantSlug) {
                 totals.grandTotal,
             ]
         );
+
+        // ON CONFLICT DO NOTHING returns zero rows when the invoice
+        // already exists -- meaning this script has run before against
+        // this database. Skip its line items too and move on, so the
+        // whole script is safe to run any number of times (this matters
+        // now that it runs automatically in Docker on every startup).
+        if (invoiceRes.rows.length === 0) {
+            skipped += 1;
+            continue;
+        }
+        inserted += 1;
+
         const invoiceId = invoiceRes.rows[0].id;
 
         for (let j = 0; j < computed.length; j++) {
@@ -86,6 +98,8 @@ async function seedInvoicesForTenant(client, tenantId, tenantSlug) {
             );
         }
     }
+
+    return { inserted, skipped };
 }
 
 async function main() {
@@ -94,9 +108,12 @@ async function main() {
         for (const tenant of TENANTS) {
             await client.query('BEGIN');
             const tenantId = await upsertTenant(client, tenant);
-            await seedInvoicesForTenant(client, tenantId, tenant.slug);
+            const { inserted, skipped } = await seedInvoicesForTenant(client, tenantId, tenant.slug);
             await client.query('COMMIT');
-            console.log(`Seeded ${tenant.name} (${tenant.slug}) -- ${SAMPLE_INVOICES.length} invoices`);
+            console.log(
+                `${tenant.name} (${tenant.slug}): ${inserted} invoice(s) created` +
+                    (skipped > 0 ? `, ${skipped} already existed (skipped)` : '')
+            );
         }
         console.log('Seed complete.');
     } catch (err) {
